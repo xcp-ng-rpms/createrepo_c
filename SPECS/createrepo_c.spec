@@ -1,37 +1,45 @@
-%{!?_licensedir:%global license %%doc}
+%global libmodulemd_version 2.3.0
 
-# Bash completion (we need different approach for RHEL-6)
-%if 0%{?rhel} == 6
-%global bash_completion %config%{_sysconfdir}/bash_completion.d/createrepo_c.bash
-%else
+%define __cmake_in_source_build 1
+
 %global bash_completion %{_datadir}/bash-completion/completions/*
-%endif
 
-%{!?python2_sitearch:%global python2_sitearch %{python_sitearch}}
-
-%if 0%{?rhel} && 0%{?rhel} <= 7
-%bcond_with python3
+%if 0%{?rhel} && ( 0%{?rhel} <= 7 || 0%{?rhel} >= 9 )
 %bcond_with drpm
 %else
-%bcond_without python3
 %bcond_without drpm
+%endif
+
+%if 0%{?rhel}
+%bcond_with zchunk
+%else
+%bcond_without zchunk
+%endif
+
+%if 0%{?rhel} && 0%{?rhel} < 7
+%bcond_with libmodulemd
+%else
+%bcond_without libmodulemd
+%endif
+
+%if 0%{?rhel} && 0%{?rhel} <= 8
+%bcond_without legacy_hashes
+%else
+%bcond_with legacy_hashes
 %endif
 
 Summary:        Creates a common metadata repository
 Name:           createrepo_c
-Version:        0.10.0
-Release:        6%{?dist}
-License:        GPLv2+
+Version:        0.21.1
+Release:        1%{?dist}
+License:        GPL-2.0-or-later
 URL:            https://github.com/rpm-software-management/createrepo_c
 Source0:        %{url}/archive/%{version}/%{name}-%{version}.tar.gz
-
-Patch0:         createrepo_c-0.10.0-ignorelock-doublefree.patch
 
 BuildRequires:  cmake
 BuildRequires:  gcc
 BuildRequires:  bzip2-devel
 BuildRequires:  doxygen
-BuildRequires:  expat-devel
 BuildRequires:  file-devel
 BuildRequires:  glib2-devel >= 2.22.0
 BuildRequires:  libcurl-devel
@@ -39,17 +47,33 @@ BuildRequires:  libxml2-devel
 BuildRequires:  openssl-devel
 BuildRequires:  rpm-devel >= 4.8.0-28
 BuildRequires:  sqlite-devel
+BuildRequires:  xz
 BuildRequires:  xz-devel
 BuildRequires:  zlib-devel
-Requires:       %{name}-libs =  %{version}-%{release}
-%if 0%{?rhel} == 6
-Requires: rpm >= 4.8.0-28
+%if %{with zchunk}
+BuildRequires:  pkgconfig(zck) >= 0.9.11
+BuildRequires:  zchunk
+%endif
+%if %{with libmodulemd}
+BuildRequires:  pkgconfig(modulemd-2.0) >= %{libmodulemd_version}
+%if 0%{?rhel} && 0%{?rhel} <= 7
+BuildRequires:  libmodulemd2
+Requires:       libmodulemd2%{?_isa} >= %{libmodulemd_version}
 %else
+BuildRequires:  libmodulemd
+Requires:       libmodulemd%{?_isa} >= %{libmodulemd_version}
+%endif
+%endif
+Requires:       %{name}-libs =  %{version}-%{release}
 BuildRequires:  bash-completion
 Requires: rpm >= 4.9.0
-%endif
 %if %{with drpm}
-BuildRequires:  drpm-devel >= 0.1.3
+BuildRequires:  drpm-devel >= 0.4.0
+%endif
+
+%if 0%{?fedora} || 0%{?rhel} > 7
+Obsoletes:      createrepo < 0.11.0
+Provides:       createrepo = %{version}-%{release}
 %endif
 
 %description
@@ -73,89 +97,62 @@ Requires:   %{name}-libs%{?_isa} = %{version}-%{release}
 This package contains the createrepo_c C library and header files.
 These development files are for easy manipulation with a repodata.
 
-%package -n python2-%{name}
-Summary:        Python bindings for the createrepo_c library
-%{?python_provide:%python_provide python2-%{name}}
-BuildRequires:  python2-devel
-BuildRequires:  python-nose
-BuildRequires:  python-sphinx
-Requires:       %{name}-libs = %{version}-%{release}
-
-%description -n python2-%{name}
-Python bindings for the createrepo_c library.
-
-%if %{with python3}
 %package -n python3-%{name}
 Summary:        Python 3 bindings for the createrepo_c library
 %{?python_provide:%python_provide python3-%{name}}
 BuildRequires:  python3-devel
-BuildRequires:  python3-nose
 BuildRequires:  python3-sphinx
 Requires:       %{name}-libs = %{version}-%{release}
 
 %description -n python3-%{name}
 Python 3 bindings for the createrepo_c library.
-%endif
 
 %prep
 %autosetup -p1
-mkdir build
-%if %{with python3}
+
 mkdir build-py3
-%endif
 
 %build
-# Build createrepo_c with Python 2
-pushd build
-  %cmake ../
-  make %{?_smp_mflags} RPM_OPT_FLAGS="%{optflags}"
-popd
-
 # Build createrepo_c with Pyhon 3
-%if %{with python3}
 pushd build-py3
-  %cmake ../ -DPYTHON_DESIRED:str=3
+  %cmake .. \
+      -DWITH_ZCHUNK=%{?with_zchunk:ON}%{!?with_zchunk:OFF} \
+      -DWITH_LIBMODULEMD=%{?with_libmodulemd:ON}%{!?with_libmodulemd:OFF} \
+      -DWITH_LEGACY_HASHES=%{?with_legacy_hashes:ON}%{!?with_legacy_hashes:OFF} \
+      -DENABLE_DRPM=%{?with_drpm:ON}%{!?with_drpm:OFF}
   make %{?_smp_mflags} RPM_OPT_FLAGS="%{optflags}"
-popd
-%endif
-
-# Build C documentation
-pushd build
+  # Build C documentation
   make doc-c
 popd
 
 %check
-pushd build
+# Run Python 3 tests
+pushd build-py3
   # Compile C tests
   make tests
 
-  # Run Python 2 tests
+  # Run Python 3 tests
   make ARGS="-V" test
 popd
-
-# Run Python 3 tests
-%if %{with python3}
-pushd build-py3
-  make ARGS="-V" test
-popd
-%endif
 
 %install
-
-pushd build
-  # Install createrepo_c with Python 2
-  make install DESTDIR=%{buildroot}
-popd
-
-# Install createrepo_c with Python 3
-%if %{with python3}
 pushd build-py3
+  # Install createrepo_c with Python 3
   make install DESTDIR=%{buildroot}
 popd
+
+%if 0%{?fedora} || 0%{?rhel} > 7
+ln -sr %{buildroot}%{_bindir}/createrepo_c %{buildroot}%{_bindir}/createrepo
+ln -sr %{buildroot}%{_bindir}/mergerepo_c %{buildroot}%{_bindir}/mergerepo
+ln -sr %{buildroot}%{_bindir}/modifyrepo_c %{buildroot}%{_bindir}/modifyrepo
 %endif
 
+%if 0%{?rhel} && 0%{?rhel} <= 7
 %post libs -p /sbin/ldconfig
 %postun libs -p /sbin/ldconfig
+%else
+%ldconfig_scriptlets libs
+%endif
 
 %files
 %doc README.md
@@ -169,27 +166,289 @@ popd
 %{_bindir}/modifyrepo_c
 %{_bindir}/sqliterepo_c
 
+%if 0%{?fedora} || 0%{?rhel} > 7
+%{_bindir}/createrepo
+%{_bindir}/mergerepo
+%{_bindir}/modifyrepo
+%endif
+
 %files libs
 %license COPYING
 %{_libdir}/lib%{name}.so.*
 
 %files devel
-%doc build/doc/html
+%doc build-py3/doc/html
 %{_libdir}/lib%{name}.so
 %{_libdir}/pkgconfig/%{name}.pc
 %{_includedir}/%{name}/
 
-%files -n python2-%{name}
-%{python2_sitearch}/%{name}/
-
-%if %{with python3}
 %files -n python3-%{name}
 %{python3_sitearch}/%{name}/
-%endif
+%{python3_sitearch}/%{name}-%{version}-py%{python3_version}.egg-info
 
 %changelog
-* Mon Feb 13 2017 Pavel Raiskup <praiskup@redhat.com> - 0.10.0-6
+* Tue Apr 04 2023 Jan Kolarik <jkolarik@redhat.com> - 0.21.1-1
+- Update to 0.21.1
+- Add --duplicated-nevra "keep-last" option, and --delayed-dump
+- Add optional filelists-ext metadata
+- Replace 'cp' binary execution with gio
+- Fix errors while parsing utf8 chars in cli options
+- Use g_pattern_spec_match() with glib >= 2.70.0
+
+* Wed Aug 17 2022 Jaroslav Rohel <jrohel@redhat.com> - 0.20.1-1
+- Update to 0.20.1
+- Fix memory allocation in unescape_ampersand_from_values
+- Fix GError messages - call g_strerror only once
+- Fix bad performance with task queue management
+- Return an error code and print a message when more than one package have the same NEVRA
+
+* Thu May 05 2022 Jaroslav Rohel <jrohel@redhat.com> - 0.20.0-1
+- Update to 0.20.0
+- Add a streaming parsing API that is user-controllable
+- Fix '&' encoding in attributes when parsing repodata
+- Remove python bindings for xml_parse_main_metadata_together (obsoleted by cr.PackageIterator)
+- Remove C API for cr_xml_parse_main_metadata_together (obsoleted by cr_PkgIterator_new)
+- Fix signature of pkg_iterator_next_package to prevent a warning
+
+* Mon Mar 14 2022 Pavla Kratochvilova <pkratoch@redhat.com> - 0.19.0-1
+- Fix memory leaks
+- Fix a bug in cr_repomd_record_compress_and_fill()
+- Zero init buffer to prevent use of garbage values if input is too short
+- Use copy+delete fallback when moving of a dir fails
+- Switch default of --keep-all-metadata to TRUE and add --discard-additional-metadata
+- Set database version only for the database records, not everything
+- If the new repodata generated during an --update run exactly matches the old repodata don't touch the files
+- Use --error-exit-val option by default
+
+* Wed Jan 19 2022 Fedora Release Engineering <releng@fedoraproject.org> - 0.17.7-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_36_Mass_Rebuild
+
+* Thu Oct 21 2021 Pavla Kratochvilova <pkratoch@redhat.com> - 0.17.7-1
+- Update to 0.17.7
+- Remove insecure hashes SHA-1 and MD5 from the default build
+
+* Thu Sep 16 2021 Sahana Prasad <sahana@redhat.com> - 0.17.5-2
+- Rebuilt with OpenSSL 3.0.0
+
+* Wed Sep 15 2021 Pavla Kratochvilova <pkratoch@redhat.com> - 0.17.5-1
+- Update to 0.17.5
+- Fix error when updating repo with removed modules metadata
+- Exit with status code 1 when loading of repo's metadata fails
+- Fix memory leaks and covscan warnings
+
+* Tue Sep 14 2021 Sahana Prasad <sahana@redhat.com> - 0.17.3-3
+- Rebuilt with OpenSSL 3.0.0
+
+* Wed Jul 21 2021 Fedora Release Engineering <releng@fedoraproject.org> - 0.17.3-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_35_Mass_Rebuild
+
+* Tue Jun 15 2021 Pavla Kratochvilova <pkratoch@redhat.com> - 0.17.3-1
+- Update to 0.17.3
+- Fix valgrind warnings caused by subprocess calls
+- Fix memory leak
+
+* Fri Jun 04 2021 Python Maint <python-maint@redhat.com> - 0.17.2-2
+- Rebuilt for Python 3.10
+
+* Thu Apr 15 2021 Nicola Sella <nsella@redhat.com> - 0.17.2-1
+- Update to 0.17.2
+- Remove empty arrays in tests, pass NULL instead (fixes a compiler war…
+- Replace 'blacklist' with 'excludelist'
+- Allow taking __repr__ (__str__) of closed xmlfile and sqlite (RhBug:1913465)
+- Fix segmentation fault when taking str() of closed file
+- Setting updated/issued_date to None - (RhBug:1921715)
+- Drop Python 2 support
+- Disable drpm also for RHEL >= 9 (RhBug:1914828)
+- Never leave behind .repodata lock on exit (RhBug:1906831)
+- Revert back to old API of cr_compress_file_with_stat and cr_compress
+
+* Tue Jan 26 2021 Fedora Release Engineering <releng@fedoraproject.org> - 0.16.2-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_34_Mass_Rebuild
+
+* Mon Nov 23 2020 Nicola Sella <nsella@redhat.com> - 0.16.2-1
+- Fix various memory leaks
+- Add a new function to replace PyObject_ToStrOrNull()
+
+* Tue Oct 06 2020 Nicola Sella <nsella@redhat.com> - 0.16.1
+- Update to 0.16.1
+- Add the section number to the manual pages
+- Parse xml snippet in smaller parts (RhBug:1859689)
+- Add module metadata support to createrepo_c (RhBug:1795936)
+
+* Fri Aug 07 2020 Nicola Sella <nsella@redhat.com> - 0.15.11-4
+- spec: Fix building with new cmake macros
+
+* Sat Aug 01 2020 Fedora Release Engineering <releng@fedoraproject.org> - 0.15.11-3
+- Second attempt - Rebuilt for
+  https://fedoraproject.org/wiki/Fedora_33_Mass_Rebuild
+
+* Mon Jul 27 2020 Fedora Release Engineering <releng@fedoraproject.org> - 0.15.11-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_33_Mass_Rebuild
+
+* Tue Jun 02 2020 Ales Matej <amatej@redhat.com> - 0.15.11-1
+- Update to 0.15.11
+- Switch updateinfo to explicitly include bool values (RhBug:1772466)
+- Enhance error handling when locating repositories (RhBug:1762697)
+- Make documentation for --update-md-path more specific
+- Clean up temporary .repodata on sigint
+- Add relogin_suggested to updatecollectionpackage (Rhbug:1779751)
+- Support issued date in epoch format in Python API (RhBug:1779751)
+- Allow parsing of xml repodata from string (RhBug: 1804308)
+- Remove expat xml library in favor of libxml2
+- Copy updateCollectionModule on assignment to prevent bogus data (RhBug:1821781)
+- Add --arch-expand option to mergerepo_c
+
+* Sun May 24 2020 Miro Hrončok <mhroncok@redhat.com> - 0.15.5-3
+- Rebuilt for Python 3.9
+
+* Tue Jan 28 2020 Fedora Release Engineering <releng@fedoraproject.org> - 0.15.5-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_32_Mass_Rebuild
+
+* Wed Jan 08 2020 Pavel Raiskup <praiskup@redhat.com> - 0.15.5-1
+- update to upstream 0.15.5 release, per
+  https://github.com/rpm-software-management/createrepo_c/compare/0.15.4...0.15.5
+- new option --recycle-pkglist for --update mode
+- a bit more optimal --update caching
+
+* Wed Dec 11 2019 Mohan Boddu <mboddu@bhujji.com> - 0.15.4-1
+- Update to upstream 0.15.4 release
+
+* Tue Sep 17 2019 Ales Matej <amatej@redhat.com> - 0.15.1-1
+- Update to 0.15.1
+- Allow pip to see installation of python3-createrepo_c
+- Imporove documentation
+- Switch off timestamping of documentation to avoid file conflics for createrepo_c-devel i686/x86_64 parallel installation
+- Remove dependency on deltarpm in favour of drpm
+
+* Sat Aug 17 2019 Miro Hrončok <mhroncok@redhat.com> - 0.14.2-3
+- Rebuilt for Python 3.8
+
+* Wed Jul 24 2019 Fedora Release Engineering <releng@fedoraproject.org> - 0.14.2-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_31_Mass_Rebuild
+
+* Thu Jun 27 2019 Pavla Kratochvilova <pkratoch@redhat.com> - 0.14.2-1
+- Update to 0.14.2
+- Obsolete createrepo on all Fedoras again (RhBug:1702771)
+- Fix issue with createrepo_c hanging at the end (RhBug:1714666)
+- Don't include packages with forbidden control chars in repodata
+
+* Mon Jun 10 22:13:18 CET 2019 Igor Gnatenko <ignatenkobrain@fedoraproject.org> - 0.14.1-4
+- Rebuild for RPM 4.15
+
+* Mon Jun 10 15:42:00 CET 2019 Igor Gnatenko <ignatenkobrain@fedoraproject.org> - 0.14.1-3
+- Rebuild for RPM 4.15
+
+* Tue May 28 2019 Stephen Gallagher <sgallagh@redhat.com> - 0.14.1-2
+- Depend on the appropriate minimum version of libmodulemd
+
+* Fri May 24 2019 Pavla Kratochvilova <pkratoch@redhat.com> - 0.14.1-1
+- Update to 0.14.1
+- Add --pkgorigins mode for Koji
+- Correct pkg count in headers if there were invalid pkgs (RhBug:1596211)
+- Prevent exiting with 0 if errors occur while finalizing repodata.
+
+* Mon May 20 2019 Pavla Kratochvilova <pkratoch@redhat.com> - 0.13.2-2
+- Backport patch to fix crash when dumping updateinfo and module is ommited (RhBug:1707981)
+
+* Tue May 07 2019 Pavla Kratochvilova <pkratoch@redhat.com> - 0.13.2-1
+- Update to 0.13.2
+- Add support for reading and merging module metadata
+- Add support for modular errata (RhBug:1656584)
+- Update --keep-all-metadata to keep all additional metadata, not just updateinfo and groupfile (RhBug:1639287)
+- mergerepo_c: Add support for --koji simple mode
+- Fix generating corrupted sqlite files (RhBug: 1696808)
+- modifyrepo_c: Prevent doubling of compression suffix (test.gz.gz)
+- Do not obsolete createrepo on Fedora < 31
+
+* Mon Mar 11 2019 Pavla Kratochvilova <pkratoch@redhat.com> - 0.12.2-1
+- Update to 0.12.2
+- mergerepo_c: check if nevra is NULL and warn user about src.rpm naming
+- Consistently produce valid URLs by prepending protocol. (RhBug:1632121)
+
+* Wed Feb 13 2019 Pavla Kratochvilova <pkratoch@redhat.com> - 0.12.1-1
+- Update to 0.12.1-1
+- Include file timestamp in repomd.xml to allow reproducing exact metadata as produced in the past
+- Enhance support of zchunk
+
+* Thu Jan 31 2019 Fedora Release Engineering <releng@fedoraproject.org> - 0.12.0-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_30_Mass_Rebuild
+
+* Wed Dec 12 2018 Jaroslav Mracek <jmracek@redhat.com> - 0.12.0-1
+- Update to 0.12.0
+- Support of zchunk
+
+* Mon Nov 26 2018 Miro Hrončok <mhroncok@redhat.com> - 0.11.1-2
+- Drop Python 2 subpackage on Fedora 30 (#1651182)
+
+* Tue Jul 31 2018 Daniel Mach <dmach@redhat.com> - 0.11.1-1
+- [spec] Fix ldconfig for rhel <= 7
+- Fix "CR_DELTA_RPM_SUPPORT" redefined warnings
+- Set to build against Python 3 by default
+- Update README
+- Add mergerepo_c --repo-prefix-search and --repo-prefix-replace.
+- Fix missing packages in mergerepo_c in case multiple VR exists for single pkg in repo.
+
+* Wed Jul 25 2018 Igor Gnatenko <ignatenkobrain@fedoraproject.org> - 0.11.0-4
+- Backport patch for multiple packages with same name for mergerepo_c
+
+* Thu Jul 12 2018 Fedora Release Engineering <releng@fedoraproject.org> - 0.11.0-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_29_Mass_Rebuild
+
+* Mon Jul 02 2018 Miro Hrončok <mhroncok@redhat.com> - 0.11.0-2
+- Rebuilt for Python 3.7
+
+* Wed Jun 27 2018 Marek Blaha <mblaha@redhat.com> - 0.11.0-1
+- Update to 0.11.0
+
+* Mon Jun 18 2018 Miro Hrončok <mhroncok@redhat.com> - 0.10.0-21
+- Rebuilt for Python 3.7
+
+* Wed May 16 2018 Jaroslav Mracek <jmracek@redhat.com> - 0.10.0-20
+- Obsolete and provide createrepo
+
+* Fri Mar 16 2018 Miro Hrončok <mhroncok@redhat.com> - 0.10.0-19
+- Conditionalize the Python 2 subpackage
+- Don't build the Python 2 subpackage on EL > 7
+
+* Wed Feb 07 2018 Iryna Shcherbina <ishcherb@redhat.com> - 0.10.0-18
+- Update Python 2 dependency declarations to new packaging standards
+  (See https://fedoraproject.org/wiki/FinalizingFedoraSwitchtoPython3)
+
+* Wed Feb 07 2018 Fedora Release Engineering <releng@fedoraproject.org> - 0.10.0-17
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_28_Mass_Rebuild
+
+* Sat Feb 03 2018 Igor Gnatenko <ignatenkobrain@fedoraproject.org> - 0.10.0-16
+- Switch to %%ldconfig_scriptlets
+
+* Fri Dec 22 2017 Patrick Uiterwijk <puiterwijk@redhat.com> - 0.10.0-15
+- Backport PR#64 and #66
+
+* Fri Aug 11 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.10.0-14
+- Rebuilt after RPM update (№ 3)
+
+* Thu Aug 10 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.10.0-13
+- Rebuilt for RPM soname bump
+
+* Thu Aug 10 2017 Igor Gnatenko <ignatenko@redhat.com> - 0.10.0-12
+- Rebuilt for RPM soname bump
+
+* Wed Aug 02 2017 Fedora Release Engineering <releng@fedoraproject.org> - 0.10.0-11
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_27_Binutils_Mass_Rebuild
+
+* Wed Jul 26 2017 Fedora Release Engineering <releng@fedoraproject.org> - 0.10.0-10
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_27_Mass_Rebuild
+
+* Mon Feb 13 2017 Pavel Raiskup <praiskup@redhat.com> - 0.10.0-9
 - backport patches for double-free in --ignore-lock (rhbz#1355720)
+
+* Fri Feb 10 2017 Fedora Release Engineering <releng@fedoraproject.org> - 0.10.0-8
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_26_Mass_Rebuild
+
+* Tue Dec 13 2016 Stratakis Charalampos <cstratak@redhat.com> - 0.10.0-7
+- Rebuild for Python 3.6
+
+* Tue Jul 19 2016 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 0.10.0-6
+- https://fedoraproject.org/wiki/Changes/Automatic_Provides_for_Python_RPM_Packages
 
 * Tue Apr 12 2016 Igor Gnatenko <ignatenko@redhat.com> - 0.10.0-5
 - Make drpm builds conditional
